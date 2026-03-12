@@ -2,84 +2,62 @@
 import datetime as dt
 import re
 from dataclasses import dataclass
+from typing import Callable, Any
 
 import streamlit as st
 
 
-# -----------------------------
-# App Config
-# -----------------------------
-st.set_page_config(page_title="Office Helper Chatbot", layout="centered")
+# =========================
+# Page
+# =========================
+st.set_page_config(page_title="OfficeBuddy • Office Helper Chatbot", layout="centered")
+
+st.markdown(
+    """
+<style>
+.block-container { max-width: 980px; padding-top: 1.1rem; }
+.small { color: #6B7280; font-size: 0.9rem; }
+.badge { display:inline-block; padding:2px 8px; border:1px solid #E5E7EB; border-radius:999px; background:#F9FAFB; margin-right:6px; }
+.kbd { background:#F3F4F6; padding:2px 6px; border-radius:8px; border:1px solid #E5E7EB; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
 
-# -----------------------------
-# Simple Knowledge Store
-# -----------------------------
+# =========================
+# Knowledge Base (keyword retrieval)
+# =========================
 @dataclass
 class KBItem:
     title: str
     body: str
     tags: set[str]
+    category: str
 
 
 def normalize(text: str) -> str:
-    text = (text or "").lower()
-    text = re.sub(r"[^a-z0-9\s\-_/]", " ", text)
+    text = (text or "").lower().strip()
+    text = re.sub(r"[^a-z0-9\s\-/]", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
 def tokenize(text: str) -> set[str]:
-    t = normalize(text)
-    words = set(t.split())
     stop = {
         "the", "a", "an", "and", "or", "to", "for", "of", "in", "on", "at", "is", "are", "am",
         "with", "by", "from", "this", "that", "it", "as", "be", "we", "you", "i", "our", "your",
+        "please", "pls", "plz", "can", "could", "would", "need", "want", "help", "me", "my",
+        "hi", "hello", "hey", "thanks", "thank",
     }
+    words = set(normalize(text).split())
     return {w for w in words if len(w) >= 3 and w not in stop}
 
 
-BUILTIN_KB: list[KBItem] = [
-    KBItem(
-        title="Password hygiene (quick)",
-        body=(
-            "Use unique passphrases, enable MFA, avoid password reuse, and use a password manager. "
-            "Lock your screen when away, and never share credentials over email or chat."
-        ),
-        tags={"password", "mfa", "security", "account"},
-    ),
-    KBItem(
-        title="Phishing red flags",
-        body=(
-            "Unexpected urgency, mismatched sender domains, unusual attachments, and requests for credentials "
-            "or payment changes. When unsure, verify via a known channel."
-        ),
-        tags={"phishing", "security", "email"},
-    ),
-    KBItem(
-        title="Meeting basics",
-        body=(
-            "Start with outcomes, assign an owner per action item, capture decisions, and end with next steps "
-            "(owner + date). Keep pre-reads short and send notes within 24 hours."
-        ),
-        tags={"meeting", "agenda", "minutes", "notes"},
-    ),
-    KBItem(
-        title="Time management",
-        body=(
-            "Block focus time, batch shallow work, keep a single task list, and define ‘done’ before starting. "
-            "Escalate blockers early with options."
-        ),
-        tags={"focus", "planning", "productivity"},
-    ),
-]
-
-
-def chunk_text(text: str, max_chars: int = 700) -> list[str]:
+def chunk_text(text: str, max_chars: int = 1000) -> list[str]:
     text = (text or "").strip()
     if not text:
         return []
-    # Split on blank lines first; then hard-chunk if needed.
     parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks: list[str] = []
     for p in parts:
@@ -91,47 +69,84 @@ def chunk_text(text: str, max_chars: int = 700) -> list[str]:
     return [c for c in chunks if c]
 
 
-def build_kb(uploaded_text: str | None) -> list[KBItem]:
+BUILTIN_KB: list[KBItem] = [
+    KBItem(
+        title="Reset password / account locked",
+        body="Try the approved self-service reset/MFA recovery steps first. If locked out, open an IT ticket with: username, error message, when it started, device/OS, network (VPN/office/home).",
+        tags={"password", "reset", "locked", "login", "mfa", "account"},
+        category="IT",
+    ),
+    KBItem(
+        title="Phishing: what to do",
+        body="Don’t click links/attachments. Report via your company’s phishing-report method (button/email) and delete. If you entered credentials, reset password and notify IT immediately.",
+        tags={"phishing", "security", "email", "scam", "attachment"},
+        category="Security",
+    ),
+    KBItem(
+        title="Meeting best practices",
+        body="Start with outcomes, timebox discussion, capture decisions, and end with action items (owner + due date). Send notes within 24 hours.",
+        tags={"meeting", "agenda", "notes", "minutes", "actions", "decisions"},
+        category="Productivity",
+    ),
+    KBItem(
+        title="Expense troubleshooting (generic)",
+        body="Common fixes: confirm policy category, attach itemized receipt, ensure dates/currency correct, and verify approver chain. If submission fails, capture error text + screenshot and raise a ticket.",
+        tags={"expense", "reimbursement", "receipt", "approver", "error"},
+        category="Travel/Expense",
+    ),
+    KBItem(
+        title="Office facilities request (generic)",
+        body="For facilities issues (AC, badge access doors, desk issues), include location, floor/seat, urgency/safety impact, and photos if relevant.",
+        tags={"facilities", "office", "ac", "chair", "desk", "maintenance"},
+        category="Facilities",
+    ),
+]
+
+
+def build_kb(uploaded_texts: list[str]) -> list[KBItem]:
     kb = list(BUILTIN_KB)
-    if uploaded_text:
-        for idx, ch in enumerate(chunk_text(uploaded_text), start=1):
+    for up_idx, text in enumerate(uploaded_texts, start=1):
+        for ch_idx, ch in enumerate(chunk_text(text), start=1):
             kb.append(
                 KBItem(
-                    title=f"Uploaded FAQ #{idx}",
+                    title=f"Uploaded Policy #{up_idx}.{ch_idx}",
                     body=ch,
                     tags=tokenize(ch),
+                    category="Uploaded",
                 )
             )
     return kb
 
 
-def retrieve(kb: list[KBItem], query: str, top_k: int = 3) -> list[KBItem]:
+def retrieve(kb: list[KBItem], query: str, top_k: int = 4) -> list[tuple[int, KBItem]]:
     q = tokenize(query)
     if not q:
         return []
-    scored = []
+    scored: list[tuple[int, KBItem]] = []
     for item in kb:
         overlap = len(q & item.tags)
         if overlap > 0:
             scored.append((overlap, item))
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [it for _, it in scored[:top_k]]
+    return scored[:top_k]
 
 
-# -----------------------------
-# Templates (employee-useful)
-# -----------------------------
-def tpl_standup() -> str:
+# =========================
+# Templates
+# =========================
+def tpl_email() -> str:
     return (
-        "Standup update\n\n"
-        "Done:\n- \n\n"
-        "Next:\n- \n\n"
-        "Blockers/Risks:\n- \n\n"
-        "Ask (if any):\n- "
+        "Subject: [Action] [Topic] by [Date]\n\n"
+        "Hi [Name],\n"
+        "I’m reaching out to request [ask].\n\n"
+        "Context:\n- \n\n"
+        "What I need (Owner | Date):\n- \n\n"
+        "Decision/approval needed:\n- \n\n"
+        "Thanks,\n[Your name]"
     )
 
 
-def tpl_meeting_agenda() -> str:
+def tpl_agenda() -> str:
     return (
         "30-min meeting agenda\n\n"
         "1) Outcomes (2 mins)\n"
@@ -142,7 +157,7 @@ def tpl_meeting_agenda() -> str:
     )
 
 
-def tpl_meeting_notes() -> str:
+def tpl_notes() -> str:
     return (
         "Meeting notes\n\n"
         "Date/Time:\nAttendees:\n\n"
@@ -154,198 +169,393 @@ def tpl_meeting_notes() -> str:
     )
 
 
+def tpl_standup() -> str:
+    return "Done:\n- \n\nNext:\n- \n\nBlockers/Risks:\n- \n\nAsk (if any):\n- "
+
+
 def tpl_raid() -> str:
     return (
-        "RAID entry\n\n"
         "Type (Risk/Assumption/Issue/Dependency):\n"
-        "Description:\n"
-        "Impact:\n"
-        "Likelihood:\n"
-        "Owner:\n"
-        "Mitigation / next action:\n"
-        "Due date:\n"
-        "Status:"
+        "Description:\nImpact:\nLikelihood:\nOwner:\nMitigation / next action:\nDue date:\nStatus:"
     )
 
 
-def tpl_it_ticket() -> str:
+# =========================
+# Generic Flow Engine
+# =========================
+@dataclass
+class Flow:
+    name: str
+    intro: str
+    steps: list[tuple[str, str]]  # (field, prompt)
+    formatter: Callable[[dict], str]
+
+
+def flow_format_ticket(data: dict) -> str:
     return (
-        "IT ticket (copy/paste)\n\n"
-        "Summary:\n"
-        "Business impact:\n"
-        "When it started:\n"
-        "What changed (if known):\n"
-        "Steps to reproduce:\n"
-        "Expected vs actual:\n"
-        "Device/OS:\n"
-        "Network (office/home/VPN):\n"
-        "Screenshots/logs attached:\n"
-        "Urgency:\n"
-        "Contact window:"
+        "Ticket (copy/paste)\n\n"
+        f"Category: {data.get('category','')}\n"
+        f"Summary: {data.get('summary','')}\n"
+        f"Business impact: {data.get('impact','')}\n"
+        f"Urgency: {data.get('urgency','')}\n"
+        f"When it started: {data.get('start_time','')}\n"
+        f"System/App: {data.get('system','')}\n"
+        f"Device/OS: {data.get('device','')}\n"
+        f"Network: {data.get('network','')}\n"
+        f"Steps to reproduce: {data.get('repro','')}\n"
+        f"Expected vs actual: {data.get('expected_actual','')}\n"
+        f"Attachments available: {data.get('attachments','')}\n"
+        f"Contact window/timezone: {data.get('contact','')}\n"
     )
 
 
-def tpl_email() -> str:
+def flow_format_access(data: dict) -> str:
     return (
-        "Email draft\n\n"
-        "Subject: [Action] [Topic] by [Date]\n\n"
-        "Hi [Name],\n"
-        "I’m reaching out to [ask].\n\n"
-        "Context:\n- \n\n"
-        "What I need (Owner | Date):\n- \n\n"
-        "Decision/approval needed:\n- \n\n"
-        "Thanks,\n"
-        "[Your name]"
+        "Access request (copy/paste)\n\n"
+        f"System/App: {data.get('system','')}\n"
+        f"Role/access needed: {data.get('role','')}\n"
+        f"Business justification: {data.get('justification','')}\n"
+        f"Start date: {data.get('start_date','')}\n"
+        f"End date (if temporary): {data.get('end_date','')}\n"
+        f"Manager/approver: {data.get('approver','')}\n"
+        f"User info (name/email/ID): {data.get('user','')}\n"
     )
 
 
-def tpl_focus_plan() -> str:
+def flow_format_leave(data: dict) -> str:
     return (
-        "Daily focus plan\n\n"
-        "Top 3 outcomes:\n- \n- \n- \n\n"
-        "Focus blocks:\n- Block 1 (time):\n- Block 2 (time):\n\n"
-        "Admin/shallow work (batch):\n- \n\n"
-        "Risks/blockers to escalate:\n- "
+        "Leave request message (copy/paste)\n\n"
+        f"Leave type: {data.get('type','')}\n"
+        f"Dates: {data.get('dates','')}\n"
+        f"Coverage plan: {data.get('coverage','')}\n"
+        f"Urgency/notes: {data.get('notes','')}\n"
+        f"Manager: {data.get('manager','')}\n"
     )
 
 
-# -----------------------------
-# Chat Engine (rule-based)
-# -----------------------------
+def flow_format_expense(data: dict) -> str:
+    return (
+        "Expense help request (copy/paste)\n\n"
+        f"Issue summary: {data.get('summary','')}\n"
+        f"Tool/system: {data.get('system','')}\n"
+        f"Error text (if any): {data.get('error','')}\n"
+        f"Amount/currency: {data.get('amount','')}\n"
+        f"Date of expense: {data.get('date','')}\n"
+        f"Receipt available: {data.get('receipt','')}\n"
+        f"What I tried: {data.get('tried','')}\n"
+    )
+
+
+FLOWS: dict[str, Flow] = {
+    "ticket": Flow(
+        name="ticket",
+        intro="Let’s raise a ticket. I’ll ask a few quick questions.",
+        steps=[
+            ("category", "Type of ticket? (IT/HR/Facilities/Payroll/Other)"),
+            ("summary", "Short summary (one line)."),
+            ("impact", "Business impact? (who/what blocked)"),
+            ("urgency", "Urgency? (Low/Medium/High/Critical)"),
+            ("start_time", "When did it start? (e.g., today 10am)"),
+            ("system", "Which system/app is affected?"),
+            ("device", "Device + OS? (e.g., laptop + Windows/macOS)"),
+            ("network", "Network? (Office/Home/VPN)"),
+            ("repro", "Steps to reproduce (or ‘intermittent’)."),
+            ("expected_actual", "Expected vs actual behavior."),
+            ("attachments", "Any screenshots/logs to attach? (yes/no)"),
+            ("contact", "Best contact window + timezone."),
+        ],
+        formatter=flow_format_ticket,
+    ),
+    "access": Flow(
+        name="access",
+        intro="Got it—access request. I’ll collect the details.",
+        steps=[
+            ("system", "Which system/app?"),
+            ("role", "What access/role do you need?"),
+            ("justification", "Business justification (1–2 lines)."),
+            ("start_date", "Start date?"),
+            ("end_date", "End date (or ‘N/A’)."),
+            ("approver", "Approver/manager name/email?"),
+            ("user", "Your name + email/employee ID (as required)."),
+        ],
+        formatter=flow_format_access,
+    ),
+    "leave": Flow(
+        name="leave",
+        intro="Okay—leave request. I’ll draft a clean message.",
+        steps=[
+            ("type", "Leave type? (PTO/Sick/Personal/Other)"),
+            ("dates", "Dates + half-day/full-day?"),
+            ("coverage", "Coverage plan (who covers what)?"),
+            ("notes", "Any notes/urgency? (optional; type ‘none’)"),
+            ("manager", "Manager/approver name?"),
+        ],
+        formatter=flow_format_leave,
+    ),
+    "expense": Flow(
+        name="expense",
+        intro="Expense issue—let’s capture what support needs.",
+        steps=[
+            ("summary", "What’s the problem? (1 line)"),
+            ("system", "Which tool/system?"),
+            ("error", "Any error message text? (or ‘none’)"),
+            ("amount", "Amount + currency?"),
+            ("date", "Expense date?"),
+            ("receipt", "Receipt/itemized receipt available? (yes/no)"),
+            ("tried", "What have you tried already?"),
+        ],
+        formatter=flow_format_expense,
+    ),
+}
+
+
+def start_flow(flow_key: str):
+    st.session_state.active_flow = flow_key
+    st.session_state.flow_step_idx = 0
+    st.session_state.flow_data = {k: "" for k, _ in FLOWS[flow_key].steps}
+
+
+def cancel_flow():
+    st.session_state.active_flow = None
+    st.session_state.flow_step_idx = 0
+    st.session_state.flow_data = {}
+
+
+def flow_complete(flow_key: str) -> bool:
+    data = st.session_state.flow_data
+    return all((data.get(k) or "").strip() for k, _ in FLOWS[flow_key].steps)
+
+
+# =========================
+# Intents
+# =========================
+def has_any(text: str, phrases: list[str]) -> bool:
+    t = normalize(text)
+    return any(p in t for p in phrases)
+
+
+def detect_flow_intent(text: str) -> str | None:
+    t = normalize(text)
+
+    if has_any(t, ["raise a ticket", "open a ticket", "create ticket", "helpdesk", "service desk", "ticket"]):
+        return "ticket"
+    if has_any(t, ["need access", "access request", "permission", "grant access", "role access"]):
+        return "access"
+    if has_any(t, ["apply leave", "pto", "sick leave", "leave request", "vacation"]):
+        return "leave"
+    if has_any(t, ["expense", "reimbursement", "receipt", "claim"]):
+        return "expense"
+
+    return None
+
+
+def detect_template_intent(text: str) -> str | None:
+    t = normalize(text)
+    if has_any(t, ["draft email", "write email", "email"]):
+        return "email"
+    if has_any(t, ["agenda", "meeting agenda"]):
+        return "agenda"
+    if has_any(t, ["meeting notes", "minutes", "notes"]):
+        return "notes"
+    if has_any(t, ["standup", "daily update", "status update", "scrum"]):
+        return "standup"
+    if has_any(t, ["raid", "risk", "issue", "dependency", "assumption"]):
+        return "raid"
+    return None
+
+
 HELP_TEXT = (
-    "Commands:\n"
-    "- /help\n"
-    "- /clear\n"
-    "- /templates\n"
-    "- /standup\n"
-    "- /agenda\n"
-    "- /notes\n"
-    "- /raid\n"
-    "- /it\n"
-    "- /email\n"
-    "- /focus\n\n"
-    "You can also upload a FAQ/policy text in the sidebar."
+    "Try:\n"
+    "- “I want to raise a ticket”  (guided)\n"
+    "- “I need access to [system]” (guided)\n"
+    "- “I want to apply leave”     (guided)\n"
+    "- “Expense reimbursement error” (guided)\n"
+    "- “Draft an email to my manager” (template)\n"
+    "- “Create meeting agenda” (template)\n\n"
+    "Commands: /help /clear /cancel /skills"
 )
 
 
-def route(user_text: str, kb: list[KBItem], tone: str, org_hint: str) -> str:
+def assistant_reply(user_text: str, kb: list[KBItem], policy_hint: str) -> str:
     t = (user_text or "").strip()
-    low = t.lower()
+    low = t.lower().strip()
 
+    # Commands
     if low in {"/help", "help"}:
         return HELP_TEXT
+    if low == "/skills":
+        return "Skills: ticket, access request, leave request, expense help, email/agenda/notes/standup/RAID, policy Q&A (upload)."
+    if low == "/cancel":
+        if st.session_state.active_flow:
+            cancel_flow()
+            return "Cancelled the current guided flow."
+        return "Nothing to cancel."
+    if low == "/clear":
+        st.session_state.messages = []
+        cancel_flow()
+        return "Cleared."
 
-    if low == "/templates":
-        return "Templates: /email /agenda /notes /standup /raid /it /focus"
+    # If in a guided flow, treat message as the answer to the current question
+    if st.session_state.active_flow:
+        fk = st.session_state.active_flow
+        flow = FLOWS[fk]
+        idx = st.session_state.flow_step_idx
+        field, _prompt = flow.steps[idx]
 
-    if low == "/standup":
+        st.session_state.flow_data[field] = t
+
+        # Advance or finish
+        if flow_complete(fk):
+            out = flow.formatter(st.session_state.flow_data)
+            cancel_flow()
+            return "Done. Copy/paste this:\n\n" + out
+
+        st.session_state.flow_step_idx = min(idx + 1, len(flow.steps) - 1)
+        nfield, nprompt = flow.steps[st.session_state.flow_step_idx]
+        return nprompt + "\n\n(Type /cancel to stop.)"
+
+    # Start a guided flow if intent detected
+    fk = detect_flow_intent(t)
+    if fk:
+        start_flow(fk)
+        flow = FLOWS[fk]
+        first_prompt = flow.steps[0][1]
+        return f"{flow.intro}\n\n{first_prompt}\n\n(Type /cancel to stop.)"
+
+    # Templates (natural language)
+    temp = detect_template_intent(t)
+    if temp == "email":
+        return tpl_email()
+    if temp == "agenda":
+        return tpl_agenda()
+    if temp == "notes":
+        return tpl_notes()
+    if temp == "standup":
         return tpl_standup()
-
-    if low == "/agenda":
-        return tpl_meeting_agenda()
-
-    if low == "/notes":
-        return tpl_meeting_notes()
-
-    if low == "/raid":
+    if temp == "raid":
         return tpl_raid()
 
-    if low == "/it":
-        return tpl_it_ticket()
-
-    if low == "/email":
-        return tpl_email()
-
-    if low == "/focus":
-        return tpl_focus_plan()
-
-    # “Interesting” office helper: quick rewrite requests
-    if any(k in low for k in ["rewrite", "rephrase", "polish", "make it formal", "make it short"]):
-        return (
-            "Paste the text and tell me:\n"
-            "- audience\n- tone (formal/friendly)\n- max length\n- key ask\n\n"
-            "I’ll rewrite it."
-        )
-
-    # Knowledge retrieval fallback
-    hits = retrieve(kb, t, top_k=3)
+    # Knowledge retrieval
+    hits = retrieve(kb, t, top_k=4)
     if hits:
-        header = "Here’s what I found (verify against your internal policy if needed):"
-        bodies = "\n\n".join([f"**{h.title}**\n{h.body}" for h in hits])
-        return f"{header}\n\n{bodies}"
+        blocks = []
+        for score, item in hits:
+            blocks.append(f"**[{item.category}] {item.title}**\n{item.body}")
+        return "Here’s what I found (validate against your internal policy if needed):\n\n" + "\n\n---\n\n".join(blocks)
 
-    # Default helpful response
-    if tone == "Formal":
-        return (
-            "Tell me what you need: email, agenda, standup, notes, RAID, IT ticket, or focus plan. "
-            f"If this is policy-related, share the relevant text/link ({org_hint}) and I’ll tailor it."
-        )
+    # Default: propose next best action + skill buttons hint
     return (
-        "Tell me what you need: email, agenda, standup, notes, RAID, IT ticket, or focus plan. "
-        f"If it’s policy-related, share the relevant text ({org_hint}) and I’ll tailor it."
+        "I can help with: raising tickets, access requests, leave requests, expense issues, and meeting/email templates.\n"
+        f"For policy questions, upload the relevant text from {policy_hint} in the sidebar.\n\n"
+        "Try: “I want to raise a ticket” or “I need access to X”."
     )
 
 
-# -----------------------------
+# =========================
 # Session State
-# -----------------------------
+# =========================
 def ss_init():
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "active_flow" not in st.session_state:
+        st.session_state.active_flow = None
+    if "flow_step_idx" not in st.session_state:
+        st.session_state.flow_step_idx = 0
+    if "flow_data" not in st.session_state:
+        st.session_state.flow_data = {}
+    if "uploaded_texts" not in st.session_state:
+        st.session_state.uploaded_texts = []
 
 
 ss_init()
 
 
-# -----------------------------
-# Sidebar (Org context + FAQ upload)
-# -----------------------------
+# =========================
+# Sidebar
+# =========================
 with st.sidebar:
-    st.subheader("Office context (optional)")
-    org_hint = st.text_input("Company/policy hint", value="your HR/IT policy portal")
-    tone = st.radio("Tone", ["Friendly", "Formal"], index=0)
+    st.subheader("OfficeBuddy Settings")
+    policy_hint = st.text_input("Policy source label", value="your HR/IT policy portal")
 
     st.divider()
-    st.subheader("Upload FAQ / policy text")
-    up = st.file_uploader("Upload .txt or .md", type=["txt", "md"])
-    uploaded_text = None
-    if up is not None:
-        uploaded_text = up.read().decode("utf-8", errors="ignore")
-        st.success("FAQ loaded for search")
+    st.subheader("Upload policies/FAQs (for Q&A)")
+    ups = st.file_uploader("Upload .txt or .md (multiple)", type=["txt", "md"], accept_multiple_files=True)
+    if ups:
+        st.session_state.uploaded_texts = []
+        for f in ups:
+            st.session_state.uploaded_texts.append(f.read().decode("utf-8", errors="ignore"))
+        st.success(f"Loaded {len(ups)} file(s)")
 
-    st.caption("Note: This app is rule-based (no external AI calls).")
+    st.divider()
+    st.subheader("Quick actions")
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Raise a ticket"):
+            start_flow("ticket")
+            st.session_state.messages.append({"role": "assistant", "content": FLOWS["ticket"].intro + "\n\n" + FLOWS["ticket"].steps[0][1], "ts": dt.datetime.now().strftime("%H:%M")})
+            st.rerun()
+        if st.button("Request access"):
+            start_flow("access")
+            st.session_state.messages.append({"role": "assistant", "content": FLOWS["access"].intro + "\n\n" + FLOWS["access"].steps[0][1], "ts": dt.datetime.now().strftime("%H:%M")})
+            st.rerun()
+    with c2:
+        if st.button("Apply leave"):
+            start_flow("leave")
+            st.session_state.messages.append({"role": "assistant", "content": FLOWS["leave"].intro + "\n\n" + FLOWS["leave"].steps[0][1], "ts": dt.datetime.now().strftime("%H:%M")})
+            st.rerun()
+        if st.button("Expense help"):
+            start_flow("expense")
+            st.session_state.messages.append({"role": "assistant", "content": FLOWS["expense"].intro + "\n\n" + FLOWS["expense"].steps[0][1], "ts": dt.datetime.now().strftime("%H:%M")})
+            st.rerun()
+
+    if st.session_state.active_flow:
+        st.caption(f"Active flow: {st.session_state.active_flow}  •  Type /cancel to stop")
 
 
-kb = build_kb(uploaded_text)
+# =========================
+# Build KB
+# =========================
+kb = build_kb(st.session_state.uploaded_texts)
 
 
-# -----------------------------
+# =========================
 # Header
-# -----------------------------
-st.title("Office Helper Chatbot")
-st.caption("Templates + quick answers for common employee needs. Use /help.")
+# =========================
+st.title("OfficeBuddy • Office Helper Chatbot")
+st.markdown(
+    '<span class="badge">Guided workflows</span><span class="badge">Templates</span><span class="badge">Policy Q&A (upload)</span>',
+    unsafe_allow_html=True,
+)
+st.markdown('<div class="small">Type <span class="kbd">/help</span> for examples.</div>', unsafe_allow_html=True)
 
 
-# -----------------------------
-# Chat UI
-# -----------------------------
+# =========================
+# Chat history
+# =========================
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
-        if "ts" in m:
+        if m.get("ts"):
             st.caption(m["ts"])
 
-user_text = st.chat_input("Type a question or /help")
+
+# Show live draft during flow
+if st.session_state.active_flow:
+    fk = st.session_state.active_flow
+    with st.expander("Live draft (updates as you answer)", expanded=True):
+        st.text_area("Draft", value=FLOWS[fk].formatter(st.session_state.flow_data), height=220)
+
+
+# =========================
+# Input
+# =========================
+user_text = st.chat_input("Ask anything office-related (e.g., raise a ticket)")
 
 if user_text:
-    if user_text.strip().lower() == "/clear":
-        st.session_state.messages = []
-        st.rerun()
-
     ts = dt.datetime.now().strftime("%H:%M")
     st.session_state.messages.append({"role": "user", "content": user_text, "ts": ts})
 
-    reply = route(user_text, kb=kb, tone=tone, org_hint=org_hint)
+    reply = assistant_reply(user_text, kb=kb, policy_hint=policy_hint)
     st.session_state.messages.append({"role": "assistant", "content": reply, "ts": ts})
 
     st.rerun()
