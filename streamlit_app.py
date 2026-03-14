@@ -1,39 +1,28 @@
-# officebuddy_bot.py
-import re, datetime as dt
-from dataclasses import dataclass
-from typing import Callable, Optional, List, Tuple
+# officebuddy_bot_full.py
 import streamlit as st
+from dataclasses import dataclass
+from typing import List, Callable, Optional
+import datetime as dt
+import re
 
 # =========================
-# Page config
+# Page config and styles
 st.set_page_config(page_title="OfficeBuddy • Helpdesk Bot", layout="centered")
-
 st.markdown("""
 <style>
-.block-container { max-width: 980px; padding-top:1rem;}
-.small { color:#6B7280; font-size:0.9rem;}
-.badge { display:inline-block; padding:2px 8px; border-radius:999px; background:#F9FAFB; margin-right:6px; }
+.block-container { max-width: 900px; padding-top:1rem;}
+.badge { display:inline-block; padding:4px 10px; border-radius:999px; background:#A0E7E5; margin-right:6px; font-weight:bold;}
+.stButton>button { background-color:#FFAEBC; color:white; font-weight:bold; border-radius:8px; height:40px;}
+.stButton>button:hover { background-color:#FF8FA3; }
 hr { border:none; border-top:1px solid #E5E7EB; margin:0.6rem 0;}
 </style>
 """, unsafe_allow_html=True)
 
 # =========================
-# Text utils
-STOPWORDS = {"the","a","an","and","or","to","for","of","in","on","at","is","are","am","with","by","from","this","that","it","as","be","we","you","i","our","your","please","pls","plz","can","could","would","need","want","help","me","my","hi","hello","hey","thanks","thank"}
+# Utilities
+def _val(v: Optional[str]) -> str: return (v or "").strip() or "N/A"
 
-def normalize(text: str) -> str:
-    text = (text or "").lower().strip()
-    text = re.sub(r"[^a-z0-9\s\-/]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-def tokenize(text: str) -> set:
-    words = set(normalize(text).split())
-    return {w for w in words if len(w) >= 3 and w not in STOPWORDS}
-
-def chunk_text(text: str, max_chars: int = 1100) -> List[str]:
-    text = (text or "").strip()
-    if not text: return []
+def chunk_text(text: str, max_chars: int = 1000) -> List[str]:
     parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     chunks = []
     for p in parts:
@@ -45,7 +34,7 @@ def chunk_text(text: str, max_chars: int = 1100) -> List[str]:
     return chunks
 
 # =========================
-# Knowledge Base
+# Knowledge Base Item
 @dataclass
 class KBItem:
     title: str
@@ -58,33 +47,34 @@ BUILTIN_KB: List[KBItem] = [
     KBItem("Password Reset","Steps to reset locked accounts/MFA.","password reset account login","IT"),
 ]
 
+def tokenize(text: str) -> set:
+    words = set(re.findall(r'\b\w+\b', text.lower()))
+    stopwords = {"the","a","an","and","or","to","for","of","in","on","at","is","are","am","with","by","from","this","that","it","as","be","we","you","i","our","your","please","pls","plz","can","could","would","need","want","help","me","my","hi","hello","hey","thanks","thank"}
+    return {w for w in words if w not in stopwords and len(w)>=3}
+
 def build_kb(uploaded_texts: List[str]) -> List[KBItem]:
     kb = list(BUILTIN_KB)
-    for up_idx, text in enumerate(uploaded_texts,start=1):
-        for ch_idx, chunk in enumerate(chunk_text(text),start=1):
-            kb.append(KBItem(f"Uploaded Doc {up_idx}.{ch_idx}", chunk, tokenize(chunk), "Uploaded"))
+    for idx, text in enumerate(uploaded_texts,start=1):
+        for cidx, chunk in enumerate(chunk_text(text),start=1):
+            kb.append(KBItem(f"UploadedDoc{idx}.{cidx}", chunk, tokenize(chunk), "Uploaded"))
     return kb
 
-def retrieve(kb: List[KBItem], query: str, top_k: int = 3) -> List[Tuple[float, KBItem]]:
+def retrieve(kb: List[KBItem], query: str, top_k: int = 3):
     q = tokenize(query)
-    if not q: return []
     scored = []
     for item in kb:
         overlap = len(q & item.tags)
-        if overlap > 0:
-            score = float(overlap)
-            scored.append((score, item))
+        if overlap>0: scored.append((overlap, item))
     scored.sort(key=lambda x:x[0], reverse=True)
     return scored[:top_k]
 
 # =========================
-# Flows and Templates
+# Flow for Ticket
 @dataclass
 class Step:
     field: str
     prompt: str
     required: bool = True
-    hint: str = ""
 
 @dataclass
 class Flow:
@@ -93,101 +83,125 @@ class Flow:
     steps: List[Step]
     formatter: Callable[[dict], str]
 
-def _val(v: Optional[str]) -> str: return (v or "").strip() or "N/A"
-
 def format_ticket(data: dict) -> str:
     return "\n".join([f"{k}: {_val(v)}" for k,v in data.items()])
 
+def format_leave(data: dict) -> str:
+    return f"""Subject: Leave Request - {_val(data.get('Leave Type'))}
+
+Dear {_val(data.get('Manager'))},
+
+I would like to request {_val(data.get('Leave Type'))} from {_val(data.get('Start Date'))} to {_val(data.get('End Date'))} due to {_val(data.get('Reason'))}.
+
+Kindly approve.
+
+Thank you,
+{_val(data.get('Employee Name'))}
+"""
+
+def format_email(data: dict) -> str:
+    return f"""Subject: {_val(data.get('Subject'))}
+
+Dear {_val(data.get('Recipient'))},
+
+{_val(data.get('Body'))}
+
+Best regards,
+{_val(data.get('Sender'))}
+"""
+
 FLOWS = {
-    "ticket": Flow(
-        "ticket",
-        "Raise a ticket with required details.",
-        [
-            Step("Category","Type of ticket? (IT/HR/Facilities/Payroll/Other)"),
-            Step("Summary","Short summary (one line)."),
-            Step("Business impact","What is affected/blocked?"),
-            Step("Urgency","Urgency level (Low/Medium/High/Critical)")
-        ],
-        format_ticket
-    )
+    "ticket": Flow("ticket","Let's raise a helpdesk ticket.",[
+        Step("Category","Type of ticket? (IT/HR/Facilities/Other)"),
+        Step("Summary","Brief summary of issue"),
+        Step("Business impact","Impact/blocked areas"),
+        Step("Urgency","Urgency (Low/Medium/High/Critical)"),
+    ], format_ticket),
+    "leave": Flow("leave","Let's draft a leave request email.",[
+        Step("Employee Name","Your full name"),
+        Step("Manager","Manager/Approver name"),
+        Step("Leave Type","Type of leave (Casual/Sick/Annual)"),
+        Step("Start Date","Leave start date"),
+        Step("End Date","Leave end date"),
+        Step("Reason","Reason for leave"),
+    ], format_leave),
+    "email": Flow("email","Let's draft a professional email.",[
+        Step("Sender","Your name"),
+        Step("Recipient","Recipient name"),
+        Step("Subject","Email subject"),
+        Step("Body","Email body"),
+    ], format_email)
 }
 
 # =========================
 # Session state init
-def ss_init():
-    for key in ["messages","uploaded_texts","active_flow","flow_step_idx","flow_data","last_export_text"]:
-        if key not in st.session_state: st.session_state[key] = [] if "messages uploaded_texts".find(key)>=0 else None if key=="active_flow" else 0 if key=="flow_step_idx" else {} if key=="flow_data" else ""
-ss_init()
+for key, default in [("messages",[]),("active_flow",None),("flow_step_idx",0),("flow_data",{}),("last_output",""),("uploaded_texts",[])]:
+    if key not in st.session_state: st.session_state[key] = default
 
-# =========================
-# Flow helpers
 def start_flow(flow_key: str):
-    flow = FLOWS[flow_key]
     st.session_state.active_flow = flow_key
     st.session_state.flow_step_idx = 0
-    st.session_state.flow_data = {s.field:"" for s in flow.steps}
+    st.session_state.flow_data = {s.field:"" for s in FLOWS[flow_key].steps}
 
 def current_step(flow_key: str) -> Step:
     return FLOWS[flow_key].steps[st.session_state.flow_step_idx]
 
 def flow_done(flow_key: str) -> bool:
-    data = st.session_state.flow_data
-    return all((data.get(s.field) or "").strip() for s in FLOWS[flow_key].steps if s.required)
+    return all((_val(st.session_state.flow_data.get(s.field)) != "N/A") for s in FLOWS[flow_key].steps if s.required)
 
-def next_missing_step_index(flow_key: str) -> int:
-    data = st.session_state.flow_data
+def next_step(flow_key: str) -> int:
     for idx, s in enumerate(FLOWS[flow_key].steps):
-        if s.required and not (data.get(s.field) or "").strip(): return idx
+        if not st.session_state.flow_data.get(s.field): return idx
     return len(FLOWS[flow_key].steps)-1
 
 # =========================
 # Assistant reply
-def assistant_reply(user_text: str, kb: List[KBItem]) -> str:
-    t = (user_text or "").strip()
-    # Commands
+def assistant_reply(user_text: str) -> str:
+    t = user_text.strip()
     if t.lower() in ["/help","help"]:
-        return "Commands: /help, /cancel, /clear. Ask: raise ticket, prepare agenda, access request..."
+        return "Commands: /help, /cancel, /clear. Ask: 'raise ticket', 'leave request', 'draft email'."
     if t.lower() == "/cancel":
         st.session_state.active_flow = None
         st.session_state.flow_step_idx = 0
         st.session_state.flow_data = {}
         return "Flow cancelled."
     if t.lower() == "/clear":
-        st.session_state.messages = []
+        st.session_state.messages=[]
         return "Chat cleared."
     
-    # Flow active
+    # Active flow
     if st.session_state.active_flow:
         fk = st.session_state.active_flow
         step = current_step(fk)
-        answer = t
-        st.session_state.flow_data[step.field] = answer
+        st.session_state.flow_data[step.field] = t
         if flow_done(fk):
             out = FLOWS[fk].formatter(st.session_state.flow_data)
-            st.session_state.last_export_text = out
+            st.session_state.last_output = out
             st.session_state.active_flow = None
-            return "Done. Review below:\n\n"+out
-        st.session_state.flow_step_idx = next_missing_step_index(fk)
+            return "✅ Completed! Review below:\n\n" + out
+        st.session_state.flow_step_idx = next_step(fk)
         nxt = current_step(fk)
-        req = " (required)" if nxt.required else " (optional)"
-        return f"{nxt.prompt}{req}\nHint: {nxt.hint}"
+        return f"{nxt.prompt} (required)"
     
-    # Detect KB query
-    hits = retrieve(kb, t)
+    # Start flows
+    if "raise ticket" in t.lower(): start_flow("ticket")
+    elif "leave request" in t.lower(): start_flow("leave")
+    elif "draft email" in t.lower(): start_flow("email")
+    
+    if st.session_state.active_flow:
+        s0 = current_step(st.session_state.active_flow)
+        return f"{FLOWS[st.session_state.active_flow].intro}\n\n{s0.prompt} (required)"
+    
+    # KB search
+    hits = retrieve(build_kb(st.session_state.uploaded_texts), t)
     if hits:
-        blocks = [f"**[{item.category}] {item.title}**\n{item.body}" for score,item in hits]
+        blocks = [f"**[{item.category}] {item.title}**\n{item.body}" for _, item in hits]
         return "\n\n---\n\n".join(blocks)
     
-    # Detect flow start
-    if any(k in t.lower() for k in ["raise ticket","open ticket","helpdesk"]):
-        start_flow("ticket")
-        s0 = current_step("ticket")
-        return f"{FLOWS['ticket'].intro}\n\n{s0.prompt} (required)"
-    
-    return "I can help with tickets, templates, and policy queries. Type /help for commands."
+    return "I can help with tickets, leave requests, email drafts, or uploaded knowledge files. Type /help."
 
 # =========================
-# Sidebar: upload files
+# Sidebar: file upload
 with st.sidebar:
     st.subheader("Upload documents for KB search")
     ups = st.file_uploader("Upload .txt or .md", type=["txt","md"], accept_multiple_files=True)
@@ -197,24 +211,27 @@ with st.sidebar:
         st.success(f"Loaded {len(ups)} file(s)")
 
 # =========================
-# Build KB
-kb = build_kb(st.session_state.uploaded_texts)
-
-# =========================
 # Chat UI
-st.title("OfficeBuddy • Office Helpdesk Bot")
-user_text = st.chat_input("Ask anything office-related")
+st.title("OfficeBuddy • Office Helpdesk Bot 💼")
+st.markdown('<span class="badge">Tickets</span> <span class="badge">Leave Request</span> <span class="badge">Email Draft</span>', unsafe_allow_html=True)
+
+user_text = st.chat_input("Type your question, e.g., 'raise ticket' or 'leave request'")
 if user_text:
     ts = dt.datetime.now().strftime("%H:%M")
-    reply = assistant_reply(user_text, kb)
+    reply = assistant_reply(user_text)
     st.session_state.messages.append({"role":"user","content":user_text,"ts":ts})
     st.session_state.messages.append({"role":"assistant","content":reply,"ts":ts})
+
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
         if m.get("ts"): st.caption(m["ts"])
 
 # =========================
-# Export last output
-if st.session_state.last_export_text.strip():
-    st.download_button("Download last output", data=st.session_state.last_export_text, file_name="officebuddy_output.txt")
+# Download last output
+if st.session_state.last_output.strip():
+    st.download_button(
+        "Download last output",
+        data=st.session_state.last_output,
+        file_name="officebuddy_output.txt",
+    )
