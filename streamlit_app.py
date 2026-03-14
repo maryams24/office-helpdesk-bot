@@ -1,157 +1,148 @@
-# officebuddy_live.py
+# officebuddy_simple.py
 import streamlit as st
+from dataclasses import dataclass
+from typing import List, Dict
 import datetime as dt
 
-st.set_page_config(page_title="OfficeBuddy • Live Bot", layout="centered")
+# =========================
+# Page config
+st.set_page_config(page_title="OfficeBuddy • Office Helper", layout="centered")
 
-# Button styling
-st.markdown("""
-<style>
-div.stButton > button { background-color: #4CAF50; color: white; border-radius: 8px; }
-</style>
-""", unsafe_allow_html=True)
+st.title("OfficeBuddy • Office Helper Chatbot")
+st.write("I can help with tickets, leave requests, and email drafts. Type /help for examples.")
 
-# Initialize session
-if "flow" not in st.session_state:
-    st.session_state.flow = None
-    st.session_state.step_idx = 0
-    st.session_state.data = {}
-    st.session_state.messages = []
-    st.session_state.last_output = ""
+# =========================
+# Initialize session state
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# ----------------------
-# Flows
-EMAIL_FLOW = [
-    ("subject", "Enter the subject line (e.g., Request new laptop)"),
-    ("recipient", "Who is this email to?"),
-    ("body_context", "Briefly describe the context or reason for this email"),
-    ("what_needed", "What do you need? (Owner | Date)"),
-    ("approval", "Decision/approval needed (optional)"),
-    ("sender", "Your name")
-]
+if "active_flow" not in st.session_state:
+    st.session_state.active_flow = None
 
-LEAVE_FLOW = [
-    ("type", "Leave type? (PTO/Sick/Personal/Other)"),
-    ("dates", "Dates of leave (e.g., 2026-03-20 to 2026-03-25)"),
-    ("coverage", "Who will cover your work?"),
-    ("manager", "Manager name"),
-    ("notes", "Any additional notes (optional)")
-]
+if "flow_data" not in st.session_state:
+    st.session_state.flow_data = {}
 
-TICKET_FLOW = [
-    ("category", "Ticket category? (IT/HR/Facilities/Payroll/Other)"),
-    ("summary", "Short summary (one line)"),
-    ("impact", "Business impact"),
-    ("urgency", "Urgency (Low/Medium/High/Critical)")
-]
+# =========================
+# Flow definitions
+@dataclass
+class Step:
+    field: str
+    prompt: str
+    required: bool = True
 
-# ----------------------
-# Format outputs
-def format_email(data):
-    return f"""Subject: {data.get('subject','')}
+@dataclass
+class Flow:
+    name: str
+    steps: List[Step]
 
-Hi {data.get('recipient','')}, I’m reaching out to request {data.get('body_context','')}.
+FLOWS = {
+    "ticket": Flow(
+        "Raise a Ticket",
+        [
+            Step("category", "Ticket category? (IT/HR/Facilities/Payroll/Other)"),
+            Step("summary", "Short summary (one line)"),
+            Step("business_impact", "Business impact (what is blocked?)"),
+            Step("urgency", "Urgency (Low/Medium/High/Critical)")
+        ]
+    ),
+    "leave": Flow(
+        "Leave Request",
+        [
+            Step("leave_type", "Leave type? (PTO/Sick/Personal/Other)"),
+            Step("dates", "Leave dates (start - end)"),
+            Step("coverage_plan", "Who will cover your work?"),
+            Step("manager", "Manager name")
+        ]
+    ),
+    "email": Flow(
+        "Email Draft",
+        [
+            Step("subject", "Email subject"),
+            Step("recipient", "Recipient name or email"),
+            Step("body", "Email body / request details")
+        ]
+    )
+}
 
-Context:
-What I need (Owner | Date): {data.get('what_needed','')}
-Decision/approval needed: {data.get('approval','N/A')}
-
-Thanks, {data.get('sender','')}
-"""
-
-def format_leave(data):
-    return f"""Leave Request
-
-Type: {data.get('type','')}
-Dates: {data.get('dates','')}
-Coverage plan: {data.get('coverage','')}
-Manager: {data.get('manager','')}
-Notes: {data.get('notes','N/A')}
-"""
-
-def format_ticket(data):
-    return f"""Ticket
-
-Category: {data.get('category','')}
-Summary: {data.get('summary','')}
-Business impact: {data.get('impact','')}
-Urgency: {data.get('urgency','')}
-"""
-
-# ----------------------
+# =========================
 # Flow helpers
 def start_flow(flow_name):
-    st.session_state.flow = flow_name
-    st.session_state.step_idx = 0
-    st.session_state.data = {}
-    st.session_state.last_output = ""
+    st.session_state.active_flow = flow_name
+    st.session_state.flow_data = {}
 
-def current_prompt():
-    idx = st.session_state.step_idx
-    flow_name = st.session_state.flow
-    if flow_name=="email":
-        return EMAIL_FLOW[idx]
-    elif flow_name=="leave":
-        return LEAVE_FLOW[idx]
-    elif flow_name=="ticket":
-        return TICKET_FLOW[idx]
+def get_next_step(flow: Flow):
+    for step in flow.steps:
+        if step.field not in st.session_state.flow_data:
+            return step
+    return None
 
-def next_step(user_input):
-    field, prompt = current_prompt()
-    st.session_state.data[field] = user_input
-    # move to next
-    st.session_state.step_idx += 1
-    # check if done
-    flow_name = st.session_state.flow
-    max_len = len(EMAIL_FLOW) if flow_name=="email" else len(LEAVE_FLOW) if flow_name=="leave" else len(TICKET_FLOW)
-    if st.session_state.step_idx >= max_len:
-        if flow_name=="email": st.session_state.last_output = format_email(st.session_state.data)
-        elif flow_name=="leave": st.session_state.last_output = format_leave(st.session_state.data)
-        elif flow_name=="ticket": st.session_state.last_output = format_ticket(st.session_state.data)
-        st.session_state.flow = None
-    else:
-        # Update live draft at each step
-        if flow_name=="email": st.session_state.last_output = format_email(st.session_state.data)
-        elif flow_name=="leave": st.session_state.last_output = format_leave(st.session_state.data)
-        elif flow_name=="ticket": st.session_state.last_output = format_ticket(st.session_state.data)
-
-# ----------------------
-# Sidebar: upload policies
-st.sidebar.header("Policy Uploads for Q&A")
-uploaded_files = st.sidebar.file_uploader("Upload .txt or .md", type=["txt","md"], accept_multiple_files=True)
-kb_texts = []
-if uploaded_files:
-    for f in uploaded_files:
-        kb_texts.append(f.read().decode("utf-8", errors="ignore"))
-    st.sidebar.success(f"Loaded {len(uploaded_files)} files")
-
-# ----------------------
-# Main UI
-st.title("OfficeBuddy • Live Office Helper Bot")
-
-user_input = st.text_input("Type your request (e.g., draft email, raise ticket, leave request)")
+# =========================
+# Chat input
+user_input = st.text_input("You:", key="input_text")
 
 if user_input:
-    text = user_input.lower()
-    if "email" in text:
-        start_flow("email")
-    elif "leave" in text:
-        start_flow("leave")
-    elif "ticket" in text:
+    ts = dt.datetime.now().strftime("%H:%M")
+    
+    # Commands
+    if user_input.lower() in ["/help", "help"]:
+        reply = (
+            "Try these:\n"
+            "- raise ticket\n"
+            "- leave request\n"
+            "- draft email\n"
+            "Type /cancel to stop any active flow."
+        )
+    elif user_input.lower() == "/cancel":
+        st.session_state.active_flow = None
+        st.session_state.flow_data = {}
+        reply = "Active task cancelled."
+    
+    # Flow active
+    elif st.session_state.active_flow:
+        flow = FLOWS[st.session_state.active_flow]
+        step = get_next_step(flow)
+        if step:
+            st.session_state.flow_data[step.field] = user_input
+            next_step = get_next_step(flow)
+            if next_step:
+                reply = f"{next_step.prompt} {'(required)' if next_step.required else '(optional)'}"
+            else:
+                # Flow completed
+                data = st.session_state.flow_data
+                result_lines = [f"{k}: {v}" for k,v in data.items()]
+                reply = f"✅ {flow.name} completed:\n" + "\n".join(result_lines)
+                st.session_state.active_flow = None
+                st.session_state.flow_data = {}
+        else:
+            reply = "Unexpected input. Type /cancel to restart."
+    
+    # Start flow
+    elif "raise ticket" in user_input.lower():
         start_flow("ticket")
+        first_step = get_next_step(FLOWS["ticket"])
+        reply = f"Let’s raise a ticket.\n{first_step.prompt} (required)"
+    
+    elif "leave request" in user_input.lower():
+        start_flow("leave")
+        first_step = get_next_step(FLOWS["leave"])
+        reply = f"Let’s submit a leave request.\n{first_step.prompt} (required)"
+    
+    elif "draft email" in user_input.lower() or "write email" in user_input.lower():
+        start_flow("email")
+        first_step = get_next_step(FLOWS["email"])
+        reply = f"Let’s draft an email.\n{first_step.prompt} (required)"
+    
     else:
-        st.info("I can help with email drafting, leave requests, or tickets.")
+        reply = "I can help with tickets, leave requests, and emails. Type /help for commands."
+    
+    # Store chat
+    st.session_state.chat_history.append({"role":"user", "text": user_input, "ts":ts})
+    st.session_state.chat_history.append({"role":"assistant", "text": reply, "ts":ts})
 
-# Flow step input
-if st.session_state.flow:
-    field, prompt = current_prompt()
-    user_step_input = st.text_input(prompt, key="flow_step")
-    if user_step_input:
-        next_step(user_step_input)
-        st.experimental_rerun()  # rerun to show next step and live draft
-
-# Live draft preview
-if st.session_state.last_output:
-    st.subheader("Live Draft / Output")
-    st.text_area("Preview", st.session_state.last_output, height=250)
-    st.download_button("Download Output", st.session_state.last_output, file_name="officebuddy_output.txt")
+# =========================
+# Display chat
+for chat in st.session_state.chat_history:
+    if chat["role"]=="user":
+        st.markdown(f"**You ({chat['ts']}):** {chat['text']}")
+    else:
+        st.markdown(f"**OfficeBuddy ({chat['ts']}):** {chat['text']}")
