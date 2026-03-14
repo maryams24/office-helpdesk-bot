@@ -1,175 +1,155 @@
-# officebuddy_colored.py
+# officebuddy_simple.py
 import streamlit as st
 import datetime as dt
 
-# =========================
-# Page config
-st.set_page_config(page_title="OfficeBuddy • Colored Bot", layout="centered")
-st.title("OfficeBuddy • Interactive Office Helper")
+st.set_page_config(page_title="OfficeBuddy • Simple Bot", layout="centered")
+
 st.markdown("""
 <style>
-.stButton>button {background-color: #4CAF50; color: white; font-weight:bold; margin:3px;}
-.ticket-msg {background-color:#FFF4E5; padding:10px; border-radius:8px;}
-.leave-msg {background-color:#E5F7FF; padding:10px; border-radius:8px;}
-.email-msg {background-color:#F0E5FF; padding:10px; border-radius:8px;}
-.policy-msg {background-color:#E5FFE5; padding:10px; border-radius:8px;}
+div.stButton > button { background-color: #4CAF50; color: white; border-radius: 8px; }
 </style>
 """, unsafe_allow_html=True)
 
-# =========================
-# Session state init
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
+# Initialize session
 if "flow" not in st.session_state:
     st.session_state.flow = None
-
-if "flow_data" not in st.session_state:
-    st.session_state.flow_data = {}
-
-if "flow_step" not in st.session_state:
-    st.session_state.flow_step = 0
-
-if "last_output" not in st.session_state:
+    st.session_state.step_idx = 0
+    st.session_state.data = {}
+    st.session_state.messages = []
     st.session_state.last_output = ""
 
-# =========================
-# Sidebar for policy uploads
-st.sidebar.subheader("Upload policies/FAQs (optional)")
-uploaded_files = st.sidebar.file_uploader("Upload .txt or .md", type=["txt", "md"], accept_multiple_files=True)
-policy_texts = []
-if uploaded_files:
-    for f in uploaded_files:
-        policy_texts.append(f.read().decode("utf-8", errors="ignore"))
-    st.sidebar.success(f"Loaded {len(uploaded_files)} file(s) for policy Q&A")
-
-# =========================
+# ----------------------
 # Flows
-FLOWS = {
-    "ticket": {
-        "steps": [
-            ("Category", "Type of ticket? (IT/HR/Facilities/Payroll/Other)"),
-            ("Summary", "Short summary (one line)"),
-            ("Business impact", "Who/what is blocked?"),
-            ("Urgency", "Urgency level (Low/Medium/High/Critical)")
-        ],
-        "color": "ticket-msg"
-    },
-    "leave": {
-        "steps": [
-            ("Employee", "Your name"),
-            ("Manager", "Manager name"),
-            ("Leave type", "Sick/Casual/Other"),
-            ("Start date", "YYYY-MM-DD"),
-            ("End date", "YYYY-MM-DD"),
-            ("Reason", "Reason for leave")
-        ],
-        "color": "leave-msg"
-    },
-    "email": {
-        "steps": [
-            ("From", "Your name/email"),
-            ("To", "Recipient email"),
-            ("Subject", "Email subject"),
-            ("Body", "Email body")
-        ],
-        "color": "email-msg"
-    },
-    "policy": {
-        "color": "policy-msg"
-    }
-}
+EMAIL_FLOW = [
+    ("subject", "Enter the subject line: (e.g., Request new laptop)"),
+    ("recipient", "Who is this email to?"),
+    ("body_context", "Briefly describe the context or reason for this email"),
+    ("what_needed", "What do you need? (Owner | Date)"),
+    ("approval", "Decision/approval needed (optional)"),
+    ("sender", "Your name")
+]
 
-# =========================
-# Helper functions
+LEAVE_FLOW = [
+    ("type", "Leave type? (PTO/Sick/Personal/Other)"),
+    ("dates", "Dates of leave (e.g., 2026-03-20 to 2026-03-25)"),
+    ("coverage", "Who will cover your work?"),
+    ("manager", "Manager name"),
+    ("notes", "Any additional notes (optional)")
+]
+
+TICKET_FLOW = [
+    ("category", "Ticket category? (IT/HR/Facilities/Payroll/Other)"),
+    ("summary", "Short summary (one line)"),
+    ("impact", "Business impact"),
+    ("urgency", "Urgency (Low/Medium/High/Critical)")
+]
+
+# ----------------------
+# Helper to format outputs
+def format_email(data):
+    return f"""Subject: {data['subject']}
+
+Hi {data['recipient']}, I’m reaching out to request {data['body_context']}.
+
+Context:
+What I need (Owner | Date): {data['what_needed']}
+Decision/approval needed: {data.get('approval','N/A')}
+
+Thanks, {data['sender']}
+"""
+
+def format_leave(data):
+    return f"""Leave Request
+
+Type: {data['type']}
+Dates: {data['dates']}
+Coverage plan: {data['coverage']}
+Manager: {data['manager']}
+Notes: {data.get('notes','N/A')}
+"""
+
+def format_ticket(data):
+    return f"""Ticket
+
+Category: {data['category']}
+Summary: {data['summary']}
+Business impact: {data['impact']}
+Urgency: {data['urgency']}
+"""
+
+# ----------------------
+# Flow handler
 def start_flow(flow_name):
     st.session_state.flow = flow_name
-    st.session_state.flow_step = 0
-    st.session_state.flow_data = {}
+    st.session_state.step_idx = 0
+    st.session_state.data = {}
 
-def flow_next_step(user_input):
-    flow = st.session_state.flow
-    step_name, _ = FLOWS[flow]["steps"][st.session_state.flow_step]
-    st.session_state.flow_data[step_name] = user_input
-    st.session_state.flow_step += 1
-    if st.session_state.flow_step >= len(FLOWS[flow]["steps"]):
-        # Flow done
-        output_lines = [f"{k}: {v}" for k, v in st.session_state.flow_data.items()]
-        st.session_state.last_output = "\n".join(output_lines)
+def current_prompt():
+    flow_name = st.session_state.flow
+    idx = st.session_state.step_idx
+    if flow_name=="email":
+        field, prompt = EMAIL_FLOW[idx]
+    elif flow_name=="leave":
+        field, prompt = LEAVE_FLOW[idx]
+    elif flow_name=="ticket":
+        field, prompt = TICKET_FLOW[idx]
+    return field, prompt
+
+def next_step(user_input):
+    field, prompt = current_prompt()
+    st.session_state.data[field] = user_input
+    # move to next
+    st.session_state.step_idx += 1
+    # check done
+    flow_name = st.session_state.flow
+    if flow_name=="email" and st.session_state.step_idx >= len(EMAIL_FLOW):
+        st.session_state.last_output = format_email(st.session_state.data)
         st.session_state.flow = None
-        st.session_state.flow_step = 0
-        return "✅ Done! Check export below."
-    else:
-        _, prompt = FLOWS[flow]["steps"][st.session_state.flow_step]
-        return f"{prompt} (required)"
-
-def simple_reply(user_input):
-    user_input = user_input.lower()
-    
-    if user_input in ["/help", "help"]:
-        return "Commands:\n- raise ticket\n- leave request\n- draft email\n- policy question\n- /clear to reset chat"
-    if user_input == "/clear":
-        st.session_state.messages = []
+    elif flow_name=="leave" and st.session_state.step_idx >= len(LEAVE_FLOW):
+        st.session_state.last_output = format_leave(st.session_state.data)
         st.session_state.flow = None
-        st.session_state.flow_step = 0
-        st.session_state.flow_data = {}
-        return "Chat cleared."
-    
-    # If in flow
-    if st.session_state.flow:
-        return flow_next_step(user_input)
-    
-    # Start flows
-    if "raise ticket" in user_input:
-        start_flow("ticket")
-        _, prompt = FLOWS["ticket"]["steps"][0]
-        return f"Let's raise a ticket. {prompt} (required)"
-    
-    if "leave request" in user_input:
-        start_flow("leave")
-        _, prompt = FLOWS["leave"]["steps"][0]
-        return f"Let's create a leave request. {prompt} (required)"
-    
-    if "draft email" in user_input:
-        start_flow("email")
-        _, prompt = FLOWS["email"]["steps"][0]
-        return f"Let's draft an email. {prompt} (required)"
-    
-    if "policy" in user_input or "faq" in user_input:
-        if policy_texts:
-            return f"Policy answer (from uploaded files):\n{policy_texts[0][:500]}..."
-        else:
-            return "No policy files uploaded. Upload .txt/.md in the sidebar to enable policy Q&A."
-    
-    return "I can help with tickets, leave requests, emails, and policy Q&A. Type /help for commands."
+    elif flow_name=="ticket" and st.session_state.step_idx >= len(TICKET_FLOW):
+        st.session_state.last_output = format_ticket(st.session_state.data)
+        st.session_state.flow = None
 
-# =========================
-# Chat input
-user_input = st.chat_input("Ask anything office-related (e.g., raise a ticket)")
+# ----------------------
+# Sidebar: upload policies/texts
+st.sidebar.header("Policy Uploads for Q&A")
+uploaded_files = st.sidebar.file_uploader("Upload .txt or .md", type=["txt","md"], accept_multiple_files=True)
+kb_texts = []
+if uploaded_files:
+    for f in uploaded_files:
+        kb_texts.append(f.read().decode("utf-8", errors="ignore"))
+    st.sidebar.success(f"Loaded {len(uploaded_files)} files")
+
+# ----------------------
+# Chat UI
+st.title("OfficeBuddy • Simple Office Helper")
+
+user_input = st.text_input("Ask me (e.g., draft email, raise ticket, leave request)")
+
 if user_input:
-    ts = dt.datetime.now().strftime("%H:%M")
-    reply = simple_reply(user_input)
-    st.session_state.messages.append({"role": "user", "content": user_input, "ts": ts, "type": "user"})
-    # Decide color
-    if st.session_state.flow in FLOWS:
-        color_class = FLOWS[st.session_state.flow]["color"]
-    elif "policy" in user_input.lower():
-        color_class = FLOWS["policy"]["color"]
+    # Intent detection
+    text = user_input.lower()
+    if "email" in text:
+        start_flow("email")
+    elif "leave" in text:
+        start_flow("leave")
+    elif "ticket" in text:
+        start_flow("ticket")
     else:
-        color_class = ""
-    st.session_state.messages.append({"role": "assistant", "content": reply, "ts": ts, "type": color_class})
+        st.session_state.messages.append(("assistant","I can help with email, leave requests, or tickets."))
 
-# =========================
-# Display chat messages with colors
-for m in st.session_state.messages:
-    if m["role"] == "assistant" and m["type"]:
-        st.markdown(f'<div class="{m["type"]}">{m["content"]}</div>', unsafe_allow_html=True)
-    else:
-        with st.chat_message(m["role"]):
-            st.markdown(m["content"])
-            st.caption(m["ts"])
+# Flow step input
+if st.session_state.flow:
+    field, prompt = current_prompt()
+    user_step_input = st.text_input(prompt, key="flow_input")
+    if user_step_input:
+        next_step(user_step_input)
+        st.experimental_rerun()
 
-# =========================
-# Export last output
+# Show last output
 if st.session_state.last_output:
-    st.download_button("Download last output", data=st.session_state.last_output, file_name="officebuddy_output.txt")
+    st.subheader("Generated Output")
+    st.text_area("Preview", st.session_state.last_output, height=250)
+    st.download_button("Download Output", st.session_state.last_output, file_name="officebuddy_output.txt")
